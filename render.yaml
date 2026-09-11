@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: tazviko
+    runtime: python
+    buildCommand: "echo No build required"
+    startCommand: "python server.py"
+    healthCheckPath: /api/v1/health
+    disk:
+      name: tazviko-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: TAZVIKO_ADMIN_KEY
+        generateValue: true
+      - key: TAZVIKO_DB_PATH
+        value: /var/data/tazviko.sqlite3
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false

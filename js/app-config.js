@@ -1,0 +1,10 @@
+window.TAZVIKO_CONFIG={
+  appName:'TAZVIKO',
+  apiBaseUrl:'/api/v1',
+  currency:'INR',
+  defaultLanguage:'en',
+  supportedLanguages:['en','hi'],
+  paymentProviders:['razorpay','cashfree','phonepe'],
+  mapsProvider:'google-maps',
+  features:{wallet:true,membership:true,referrals:true,partnerSelfOnboarding:true,deliveryPartner:true,cod:true}
+};

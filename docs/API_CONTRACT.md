@@ -31,6 +31,13 @@ Use one backend for Web, Android and iOS. Suggested base path: `/api/v1`.
 `GET /partners/applications/:id`
 `POST /admin/partners/:id/approve`
 `GET /admin/reports/earnings`
+`POST /orders/:id/feedback`
+`GET /merchant/feedback`
+`GET /rider/feedback`
+`GET /admin/feedback`
+`GET /admin/backup`
+`POST /admin/restore`
+`POST /admin/clear-test-data`
 
 Never put payment secret keys, KYC documents or privileged admin operations in browser/mobile code.
 

@@ -13,7 +13,7 @@ RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID','').strip()
 RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET','').strip()
 PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL','').strip()
 GOOGLE_PLACES_API_KEY = os.environ.get('GOOGLE_PLACES_API_KEY','').strip()
-MAX_BODY = int(os.environ.get('TAZVIKO_MAX_BODY','1048576'))
+MAX_BODY = int(os.environ.get('TAZVIKO_MAX_BODY','20971520'))
 RATE_LIMIT = int(os.environ.get('TAZVIKO_RATE_LIMIT','120'))
 COMMISSION_BPS = int(os.environ.get('TAZVIKO_COMMISSION_BPS','1500'))  # 15.00%
 PLATFORM_FEE = int(os.environ.get('TAZVIKO_PLATFORM_FEE','9'))
@@ -136,7 +136,21 @@ CREATE TABLE IF NOT EXISTS delivery_applications (
  payout_ref TEXT,
  status TEXT NOT NULL DEFAULT 'REVIEW'
 );
+CREATE TABLE IF NOT EXISTS order_feedback (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ created_at TEXT NOT NULL,
+ order_code TEXT UNIQUE NOT NULL,
+ user_id INTEGER,
+ mobile TEXT,
+ shop_rating INTEGER NOT NULL,
+ rider_rating INTEGER NOT NULL,
+ delivery_rating INTEGER NOT NULL,
+ comment TEXT,
+ issue TEXT
+);
 '''
+
+BACKUP_TABLES=('users','orders','partners','riders','products','coupons','support_tickets','delivery_applications','order_feedback')
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def db():
@@ -350,6 +364,8 @@ class Handler(SimpleHTTPRequestHandler):
         return str(target)
     def send_json(self,obj,status=200):
         data=json.dumps(obj,ensure_ascii=False).encode(); self.send_response(status); self.send_header('Content-Type','application/json; charset=utf-8'); self.send_header('Content-Length',str(len(data))); self.send_header('Cache-Control','no-store'); self.end_headers(); self.wfile.write(data)
+    def send_download_json(self,obj,filename):
+        data=json.dumps(obj,ensure_ascii=False,indent=2).encode();self.send_response(200);self.send_header('Content-Type','application/json; charset=utf-8');self.send_header('Content-Disposition',f'attachment; filename="{filename}"');self.send_header('Content-Length',str(len(data)));self.send_header('Cache-Control','no-store');self.end_headers();self.wfile.write(data)
     def read_json(self):
         try:
             n=int(self.headers.get('Content-Length','0'))
@@ -383,7 +399,15 @@ class Handler(SimpleHTTPRequestHandler):
             m=merchant_user(self)
             if not m:return self.send_json({'error':'merchant_login_required'},401)
             orders=merchant_orders(m['id']); sales=sum(int(o['subtotal']) for o in orders if o['status']!='CANCELLED'); open_count=sum(o['status'] not in ('DELIVERED','CANCELLED') for o in orders)
-            c=db(); products=c.execute('SELECT COUNT(*) c FROM products WHERE partner_id=? AND active=1',(m['id'],)).fetchone()['c']; c.close(); return self.send_json({'orders':len(orders),'sales':sales,'open_orders':open_count,'products':products})
+            c=db(); products=c.execute('SELECT COUNT(*) c FROM products WHERE partner_id=? AND active=1',(m['id'],)).fetchone()['c']; ratings=[]
+            for o in orders:
+                f=c.execute('SELECT shop_rating FROM order_feedback WHERE order_code=?',(o['order_code'],)).fetchone()
+                if f:ratings.append(f['shop_rating'])
+            c.close(); return self.send_json({'orders':len(orders),'sales':sales,'open_orders':open_count,'products':products,'rating':round(sum(ratings)/len(ratings),1) if ratings else 0,'reviews':len(ratings)})
+        if p=='/api/v1/merchant/feedback':
+            m=merchant_user(self)
+            if not m:return self.send_json({'error':'merchant_login_required'},401)
+            codes={o['order_code'] for o in merchant_orders(m['id'])};c=db();rows=[dict(x) for x in c.execute('SELECT * FROM order_feedback ORDER BY id DESC') if x['order_code'] in codes];c.close();return self.send_json({'feedback':rows})
         if p=='/api/v1/auth/me':
             usr=session_user(self); return self.send_json({'user':usr},200 if usr else 401)
         if p=='/api/v1/places/nearby':
@@ -404,6 +428,10 @@ class Handler(SimpleHTTPRequestHandler):
             r=rider_user(self)
             if not r:return self.send_json({'error':'rider_login_required'},401)
             c=db(); rows=[rowdict(x) for x in c.execute("SELECT * FROM orders WHERE assigned_rider_id=? AND status NOT IN ('CANCELLED') ORDER BY CASE WHEN status='DELIVERED' THEN 1 ELSE 0 END,id DESC LIMIT 100",(r['id'],))]; c.close(); return self.send_json({'orders':rows})
+        if p=='/api/v1/rider/feedback':
+            r=rider_user(self)
+            if not r:return self.send_json({'error':'rider_login_required'},401)
+            c=db();rows=[dict(x) for x in c.execute('''SELECT f.* FROM order_feedback f JOIN orders o ON o.order_code=f.order_code WHERE o.assigned_rider_id=? ORDER BY f.id DESC''',(r['id'],))];c.close();avg=round(sum(x['rider_rating'] for x in rows)/len(rows),1) if rows else 0;return self.send_json({'feedback':rows,'rating':avg,'reviews':len(rows)})
         if p=='/api/v1/riders':
             if not valid_admin(self,qs):return self.send_json({'error':'admin_unauthorized'},401)
             c=db(); rows=[{k:v for k,v in dict(r).items() if k!='pin_hash'} for r in c.execute('SELECT * FROM riders ORDER BY id DESC')]; c.close(); return self.send_json({'riders':rows})
@@ -426,13 +454,65 @@ class Handler(SimpleHTTPRequestHandler):
         if p=='/api/v1/admin/stats':
             if not valid_admin(self,qs): return self.send_json({'error':'admin_unauthorized'},401)
             c=db(); s=c.execute('''SELECT COUNT(*) c,COALESCE(SUM(subtotal),0) sales,COALESCE(SUM(tazviko_earning),0) earn,COALESCE(SUM(CASE WHEN payment_status='PAID' THEN total ELSE 0 END),0) paid FROM orders''').fetchone(); pending=c.execute("SELECT COUNT(*) c FROM orders WHERE status NOT IN ('DELIVERED','CANCELLED')").fetchone()['c']; partners=c.execute("SELECT COUNT(*) c FROM partners WHERE status='LIVE'").fetchone()['c']; c.close(); return self.send_json({'orders':s['c'],'sales':s['sales'],'earning':s['earn'],'online_collected':s['paid'],'open_orders':pending,'live_partners':partners})
+        if p=='/api/v1/admin/feedback':
+            if not valid_admin(self,qs):return self.send_json({'error':'admin_unauthorized'},401)
+            c=db();rows=[dict(x) for x in c.execute('SELECT * FROM order_feedback ORDER BY id DESC LIMIT 1000')];c.close();return self.send_json({'feedback':rows})
+        if p=='/api/v1/admin/backup':
+            if not valid_admin(self,qs):return self.send_json({'error':'admin_unauthorized'},401)
+            c=db();tables={t:[dict(x) for x in c.execute('SELECT * FROM '+t)] for t in BACKUP_TABLES};c.close();stamp=datetime.now().strftime('%Y%m%d-%H%M%S');return self.send_download_json({'format':'TAZVIKO_BACKUP_V1','created_at':now(),'tables':tables},f'tazviko-backup-{stamp}.json')
         if p.startswith('/api/v1/orders/') and p.endswith('/tracking'):
-            code=p.split('/')[-2]; c=db(); r=c.execute('SELECT order_code,status,payment_method,payment_status,created_at,total FROM orders WHERE order_code=?',(code,)).fetchone(); c.close(); return self.send_json(dict(r)) if r else self.send_json({'error':'not_found'},404)
+            code=p.split('/')[-2]; c=db(); r=c.execute('SELECT order_code,status,payment_method,payment_status,created_at,total FROM orders WHERE order_code=?',(code,)).fetchone(); has=bool(c.execute('SELECT 1 FROM order_feedback WHERE order_code=?',(code,)).fetchone()); c.close();
+            if not r:return self.send_json({'error':'not_found'},404)
+            out=dict(r);out['feedback_submitted']=has;return self.send_json(out)
         return super().do_GET()
     def do_POST(self):
         if not self._guard(mutate=True): return
         p=urlparse(self.path).path; data=self.read_json()
         if data is None:return self.send_json({'error':'invalid_json'},400)
+        if p=='/api/v1/admin/restore':
+            if not valid_admin(self):return self.send_json({'error':'admin_unauthorized'},401)
+            if data.get('confirmation')!='RESTORE' or (data.get('backup') or {}).get('format')!='TAZVIKO_BACKUP_V1':return self.send_json({'error':'valid_backup_and_confirmation_required'},400)
+            tables=(data['backup'].get('tables') or {});c=db()
+            try:
+                c.execute('BEGIN');c.execute('DELETE FROM sessions');c.execute('DELETE FROM merchant_sessions');c.execute('DELETE FROM rider_sessions')
+                for t in reversed(BACKUP_TABLES):c.execute('DELETE FROM '+t)
+                restored={}
+                for t in BACKUP_TABLES:
+                    rows=tables.get(t,[])
+                    if not isinstance(rows,list):raise ValueError('invalid_table_'+t)
+                    valid={x['name'] for x in c.execute('PRAGMA table_info('+t+')')};count=0
+                    for row in rows:
+                        if not isinstance(row,dict):raise ValueError('invalid_row_'+t)
+                        cols=[k for k in row if k in valid]
+                        if cols:c.execute('INSERT INTO '+t+'('+','.join(cols)+') VALUES('+','.join('?' for _ in cols)+')',[row[k] for k in cols]);count+=1
+                    restored[t]=count
+                c.commit();c.close();return self.send_json({'ok':True,'restored':restored})
+            except Exception as e:
+                c.rollback();c.close();return self.send_json({'error':'restore_failed','detail':str(e)[:300]},400)
+        if p=='/api/v1/admin/clear-test-data':
+            if not valid_admin(self):return self.send_json({'error':'admin_unauthorized'},401)
+            if data.get('confirmation')!='CLEAR TEST DATA':return self.send_json({'error':'confirmation_required'},400)
+            c=db()
+            try:
+                c.execute('BEGIN')
+                for table in ('sessions','merchant_sessions','rider_sessions','order_feedback','orders','support_tickets','delivery_applications','riders'):
+                    c.execute('DELETE FROM '+table)
+                c.execute('DELETE FROM products WHERE partner_id IS NOT NULL')
+                c.execute('DELETE FROM partners')
+                c.execute('DELETE FROM users')
+                c.commit();c.close();return self.send_json({'ok':True,'message':'test_data_cleared','kept':'built_in_catalog_and_coupons'})
+            except Exception as e:
+                c.rollback();c.close();return self.send_json({'error':'clear_failed','detail':str(e)[:300]},400)
+        if p.startswith('/api/v1/orders/') and p.endswith('/feedback'):
+            code=p.split('/')[-2];mobile=str(data.get('mobile','')).strip();usr=session_user(self);c=db();o=c.execute('SELECT * FROM orders WHERE order_code=?',(code,)).fetchone()
+            if not o:c.close();return self.send_json({'error':'order_not_found'},404)
+            if o['status']!='DELIVERED':c.close();return self.send_json({'error':'feedback_after_delivery_only'},400)
+            if not ((usr and o['user_id']==usr['id']) or (mobile and mobile==str(o['mobile']))):c.close();return self.send_json({'error':'order_mobile_verification_failed'},403)
+            try:shop=int(data.get('shop_rating'));rider=int(data.get('rider_rating'));delivery=int(data.get('delivery_rating'))
+            except Exception:c.close();return self.send_json({'error':'ratings_required'},400)
+            if any(x<1 or x>5 for x in (shop,rider,delivery)):c.close();return self.send_json({'error':'ratings_must_be_1_to_5'},400)
+            try:cur=c.execute('INSERT INTO order_feedback(created_at,order_code,user_id,mobile,shop_rating,rider_rating,delivery_rating,comment,issue) VALUES(?,?,?,?,?,?,?,?,?)',(now(),code,usr['id'] if usr else o['user_id'],str(o['mobile']),shop,rider,delivery,str(data.get('comment',''))[:1500],str(data.get('issue',''))[:120]));c.commit();fid=cur.lastrowid;c.close();return self.send_json({'ok':True,'feedback_id':fid},201)
+            except sqlite3.IntegrityError:c.close();return self.send_json({'error':'feedback_already_submitted'},409)
         if p=='/api/v1/merchant/login':
             mobile=str(data.get('mobile','')).strip(); pin=str(data.get('pin','')).strip(); c=db(); m=c.execute("SELECT * FROM partners WHERE phone=? AND status='LIVE'",(mobile,)).fetchone(); c.close()
             if not m or not m['pin_hash'] or not check_pin(pin,m['pin_hash']):return self.send_json({'error':'invalid_merchant_login'},401)
@@ -523,10 +603,14 @@ class Handler(SimpleHTTPRequestHandler):
         if p=='/api/v1/delivery/applications':
             full_name=str(data.get('full_name','')).strip(); mobile=str(data.get('mobile','')).strip()
             if not full_name or len(mobile)<8:return self.send_json({'error':'name_mobile_required'},400)
-            c=db(); cur=c.execute('INSERT INTO delivery_applications(created_at,full_name,mobile,vehicle_type,vehicle_number,identity_ref,payout_ref,status) VALUES(?,?,?,?,?,?,?,?)',(now(),full_name[:120],mobile[:30],str(data.get('vehicle_type',''))[:60],str(data.get('vehicle_number',''))[:80],str(data.get('identity_ref',''))[:160],str(data.get('payout_ref',''))[:160],'REVIEW')); c.commit(); did=cur.lastrowid; c.close(); return self.send_json({'ok':True,'id':did,'status':'REVIEW'},201)
+            c=db(); existing=c.execute("SELECT id,status FROM delivery_applications WHERE mobile=? AND status IN ('REVIEW','APPROVED') ORDER BY id DESC LIMIT 1",(mobile[:30],)).fetchone()
+            if existing:c.close();return self.send_json({'error':'rider_application_already_exists','id':existing['id'],'status':existing['status']},409)
+            cur=c.execute('INSERT INTO delivery_applications(created_at,full_name,mobile,vehicle_type,vehicle_number,identity_ref,payout_ref,status) VALUES(?,?,?,?,?,?,?,?)',(now(),full_name[:120],mobile[:30],str(data.get('vehicle_type',''))[:60],str(data.get('vehicle_number',''))[:80],str(data.get('identity_ref',''))[:160],str(data.get('payout_ref',''))[:160],'REVIEW')); c.commit(); did=cur.lastrowid; c.close(); return self.send_json({'ok':True,'id':did,'status':'REVIEW'},201)
         if p=='/api/v1/partners/applications':
             if not data.get('business_name') or len(str(data.get('phone','')).strip())<8:return self.send_json({'error':'business_name_mobile_required'},400)
-            c=db(); cur=c.execute('''INSERT INTO partners(created_at,business_name,owner_name,business_type,city,address,phone,bank_ref,catalog,status,latitude,longitude,google_place_id,source,opening_hours) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(now(),str(data.get('business_name',''))[:150],str(data.get('owner_name',''))[:120],str(data.get('business_type',''))[:80],str(data.get('city',''))[:120],str(data.get('address',''))[:500],str(data.get('phone',''))[:30],str(data.get('bank_ref',''))[:160],str(data.get('catalog',''))[:5000],'REVIEW',data.get('latitude'),data.get('longitude'),str(data.get('google_place_id',''))[:200],str(data.get('source','TAZVIKO'))[:30],str(data.get('opening_hours',''))[:120])); c.commit(); pid=cur.lastrowid; c.close(); return self.send_json({'ok':True,'id':pid,'status':'REVIEW'},201)
+            phone=str(data.get('phone','')).strip()[:30];c=db();existing=c.execute("SELECT id,status FROM partners WHERE phone=? AND status IN ('REVIEW','LIVE') ORDER BY id DESC LIMIT 1",(phone,)).fetchone()
+            if existing:c.close();return self.send_json({'error':'partner_application_already_exists','id':existing['id'],'status':existing['status']},409)
+            cur=c.execute('''INSERT INTO partners(created_at,business_name,owner_name,business_type,city,address,phone,bank_ref,catalog,status,latitude,longitude,google_place_id,source,opening_hours) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(now(),str(data.get('business_name',''))[:150],str(data.get('owner_name',''))[:120],str(data.get('business_type',''))[:80],str(data.get('city',''))[:120],str(data.get('address',''))[:500],phone,str(data.get('bank_ref',''))[:160],str(data.get('catalog',''))[:5000],'REVIEW',data.get('latitude'),data.get('longitude'),str(data.get('google_place_id',''))[:200],str(data.get('source','TAZVIKO'))[:30],str(data.get('opening_hours',''))[:120])); c.commit(); pid=cur.lastrowid; c.close(); return self.send_json({'ok':True,'id':pid,'status':'REVIEW'},201)
         return self.send_json({'error':'not_found'},404)
     def do_PATCH(self):
         if not self._guard(mutate=True): return

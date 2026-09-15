@@ -8,6 +8,9 @@ This package is designed to start small and grow without rebuilding the whole pr
 - Cart, checkout and real COD order storage
 - Admin order view, status updates, earnings ledger and partner approvals
 - Customer order tracking
+- Verified post-delivery shop, rider and delivery feedback
+- Merchant product/stock dashboard and rider self-registration/portal
+- Admin logout, duplicate-registration protection, JSON backup/restore and test-data cleanup
 - English/Hindi front-end and PWA structure
 
 ## Online payment / money to your account
@@ -23,6 +26,8 @@ Mac/Linux: run `./start_mac_linux.sh`.
 Then open `http://localhost:8000` and admin at `http://localhost:8000/admin.html`.
 
 Before public deployment, set `TAZVIKO_ADMIN_KEY` to a strong private value.
+
+For the complete launch, backup, cleanup and free-to-paid migration steps, read `FINAL_MARKETPLACE_GUIDE.md`.
 
 ## Enable online payment
 1. Create/verify your Razorpay merchant account.

@@ -11,6 +11,7 @@ This package is designed to start small and grow without rebuilding the whole pr
 - Verified post-delivery shop, rider and delivery feedback
 - Merchant product/stock dashboard and rider self-registration/portal
 - Admin logout, duplicate-registration protection, JSON backup/restore and test-data cleanup
+- Original TAZVIKO marketplace hero artwork and eight professional category item-photo icons
 - English/Hindi front-end and PWA structure
 
 ## Online payment / money to your account

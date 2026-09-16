@@ -1,6 +1,8 @@
 # TAZVIKO Final Marketplace Flow
 
 ## Customer
+- Allow **Use My Current Location** so only approved shops inside their delivery radius and their products are shown.
+- Category item photos and the marketplace banner are bundled locally, so they do not depend on third-party image links.
 - Register/login with mobile and PIN.
 - Browse default and approved-partner products.
 - Place COD orders now.
@@ -10,12 +12,13 @@
 
 ## Business owner
 1. Open the customer site and submit **Register Business**.
-2. Wait for admin approval.
-3. Admin creates a temporary merchant PIN.
-4. Login at `/partner.html` using registered mobile + PIN.
-5. Manage business profile, pickup address, opening hours and delivery radius.
-6. Add/edit products, price, image URL, stock and live status.
-7. Accept and progress incoming orders through CONFIRMED, PREPARING and READY.
+2. While physically at the shop, press **Save Shop Current Location** so nearby customers can find it.
+3. Wait for admin approval.
+4. Admin creates a temporary merchant PIN.
+5. Login at `/partner.html` using registered mobile + PIN.
+6. Manage business profile, pickup address, opening hours and delivery radius. Existing merchants must press **Update Shop Current Location** once.
+7. Add/edit products, price, image URL, stock and live status.
+8. Accept and progress incoming orders through CONFIRMED, PREPARING and READY.
 
 ## Admin
 - Login at `/admin.html` with `TAZVIKO_ADMIN_KEY`.

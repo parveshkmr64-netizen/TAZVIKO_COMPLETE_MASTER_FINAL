@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, sqlite3, secrets, hashlib, hmac, base64, urllib.request, urllib.error, time, threading
+import os, json, sqlite3, secrets, hashlib, hmac, base64, urllib.request, urllib.error, time, threading, math
 from datetime import datetime, timezone, timedelta
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -161,7 +161,7 @@ def init_db():
     c=db(); c.executescript(SCHEMA)
     # Safe migration for older starter databases.
     cols={r['name'] for r in c.execute('PRAGMA table_info(orders)')}
-    for name,typ in [('user_id','INTEGER'),('provider_order_id','TEXT'),('provider_payment_id','TEXT'),('assigned_rider_id','INTEGER'),('assigned_at','TEXT'),('picked_up_at','TEXT'),('delivered_at','TEXT')]:
+    for name,typ in [('user_id','INTEGER'),('provider_order_id','TEXT'),('provider_payment_id','TEXT'),('assigned_rider_id','INTEGER'),('assigned_at','TEXT'),('picked_up_at','TEXT'),('delivered_at','TEXT'),('customer_latitude','REAL'),('customer_longitude','REAL')]:
         if name not in cols: c.execute(f'ALTER TABLE orders ADD COLUMN {name} {typ}')
     pcols={r['name'] for r in c.execute('PRAGMA table_info(partners)')}
     for name,typ in [('latitude','REAL'),('longitude','REAL'),('google_place_id','TEXT'),('source',"TEXT NOT NULL DEFAULT 'TAZVIKO'"),('pin_hash','TEXT'),('opening_hours','TEXT'),('delivery_radius_km','INTEGER NOT NULL DEFAULT 5'),('logo_url','TEXT')]:
@@ -302,6 +302,30 @@ def merchant_orders(partner_id):
         if any(int(x.get('partner_id') or 0)==int(partner_id) for x in item.get('items',[])): rows.append(item)
     c.close(); return rows
 
+def valid_coordinates(lat,lng):
+    try:
+        lat=float(lat);lng=float(lng)
+        return (-90<=lat<=90 and -180<=lng<=180)
+    except (TypeError,ValueError):return False
+
+def distance_km(lat1,lng1,lat2,lng2):
+    lat1,lng1,lat2,lng2=map(math.radians,map(float,(lat1,lng1,lat2,lng2)))
+    dlat=lat2-lat1;dlng=lng2-lng1
+    a=math.sin(dlat/2)**2+math.cos(lat1)*math.cos(lat2)*math.sin(dlng/2)**2
+    return 6371.0088*2*math.atan2(math.sqrt(a),math.sqrt(max(0,1-a)))
+
+def nearby_live_partners(lat,lng,category='all',limit=100):
+    c=db();rows=[]
+    type_words={'food':('restaurant','cafe','bakery'),'grocery':('grocery','supermarket','convenience'),'pharmacy':('pharmacy','drugstore'),'mall':('mall',),'shop':('shop','store')}
+    wanted=type_words.get(str(category).lower())
+    for r in c.execute("SELECT * FROM partners WHERE status='LIVE' AND latitude IS NOT NULL AND longitude IS NOT NULL"):
+        d=dict(r);kind=str(d.get('business_type') or '').lower()
+        if wanted and not any(x in kind for x in wanted):continue
+        km=distance_km(lat,lng,d['latitude'],d['longitude']);radius=max(1,int(d.get('delivery_radius_km') or 5))
+        if km<=radius:
+            rows.append({'partner_id':d['id'],'name':d['business_name'],'address':d.get('address'),'city':d.get('city'),'type':d.get('business_type'),'latitude':d['latitude'],'longitude':d['longitude'],'place_id':d.get('google_place_id'),'status':'LIVE','source':'TAZVIKO','orderable':True,'distance_km':round(km,2),'delivery_radius_km':radius,'open_now':None})
+    c.close();return sorted(rows,key=lambda x:x['distance_km'])[:limit]
+
 def rider_user(handler):
     auth=handler.headers.get('Authorization','')
     token=auth[7:] if auth.startswith('Bearer ') else ''
@@ -382,9 +406,19 @@ class Handler(SimpleHTTPRequestHandler):
         if p=='/api/v1/health': return self.send_json({'ok':True,'mode':'launch-ready','payment_gateway':'razorpay' if RAZORPAY_KEY_ID else 'not-configured','time':now()})
         if p=='/api/v1/config': return self.send_json({'app_name':'TAZVIKO','currency':'INR','online_payment_enabled':bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET),'razorpay_key_id':RAZORPAY_KEY_ID,'nearby_discovery_enabled':bool(GOOGLE_PLACES_API_KEY),'rider_portal':'/rider.html','merchant_portal':'/partner.html'})
         if p=='/api/v1/catalog':
-            c=db(); rows=[dict(r) for r in c.execute("SELECT pr.product_key,pr.name,pr.merchant,pr.price,pr.category,pr.description,pr.image_url,pr.stock_qty,pr.partner_id FROM products pr LEFT JOIN partners p ON p.id=pr.partner_id WHERE pr.active=1 AND pr.stock_qty>0 AND (pr.partner_id IS NULL OR p.status='LIVE') ORDER BY pr.partner_id DESC,pr.merchant,pr.name")]; c.close(); return self.send_json({'products':rows})
+            has_location=valid_coordinates((qs.get('lat') or [None])[0],(qs.get('lng') or [None])[0]);nearby_ids=None;distances={}
+            if has_location:
+                lat=float(qs['lat'][0]);lng=float(qs['lng'][0]);near=nearby_live_partners(lat,lng);nearby_ids={x['partner_id'] for x in near};distances={x['partner_id']:x['distance_km'] for x in near}
+            c=db(); rows=[]
+            for r in c.execute("SELECT pr.product_key,pr.name,pr.merchant,pr.price,pr.category,pr.description,pr.image_url,pr.stock_qty,pr.partner_id FROM products pr LEFT JOIN partners p ON p.id=pr.partner_id WHERE pr.active=1 AND pr.stock_qty>0 AND (pr.partner_id IS NULL OR p.status='LIVE') ORDER BY pr.partner_id DESC,pr.merchant,pr.name"):
+                x=dict(r)
+                if x['partner_id'] is not None and nearby_ids is not None and x['partner_id'] not in nearby_ids:continue
+                if x['partner_id'] in distances:x['distance_km']=distances[x['partner_id']]
+                rows.append(x)
+            c.close(); return self.send_json({'products':rows,'location_filtered':has_location})
         if p=='/api/v1/partners/live':
-            c=db(); rows=[{k:v for k,v in dict(r).items() if k!='pin_hash'} for r in c.execute("SELECT * FROM partners WHERE status='LIVE' ORDER BY id DESC")]; c.close(); return self.send_json({'partners':rows})
+            if valid_coordinates((qs.get('lat') or [None])[0],(qs.get('lng') or [None])[0]):return self.send_json({'partners':nearby_live_partners(float(qs['lat'][0]),float(qs['lng'][0])),'location_filtered':True})
+            c=db(); rows=[{k:v for k,v in dict(r).items() if k!='pin_hash'} for r in c.execute("SELECT * FROM partners WHERE status='LIVE' ORDER BY id DESC")]; c.close(); return self.send_json({'partners':rows,'location_filtered':False})
         if p=='/api/v1/merchant/me':
             m=merchant_user(self); return self.send_json({'merchant':{k:v for k,v in m.items() if k!='pin_hash'}}) if m else self.send_json({'error':'merchant_login_required'},401)
         if p=='/api/v1/merchant/products':
@@ -415,11 +449,10 @@ class Handler(SimpleHTTPRequestHandler):
                 lat=float((qs.get('lat') or [''])[0]); lng=float((qs.get('lng') or [''])[0]); radius=int((qs.get('radius') or ['4000'])[0]); category=str((qs.get('category') or ['all'])[0])
             except Exception:return self.send_json({'error':'valid_lat_lng_required'},400)
             try:
-                rows=google_nearby(lat,lng,radius,category)
-                if rows is None:
-                    c=db(); rows=[dict(r) for r in c.execute("SELECT id AS partner_id,business_name AS name,address,city,business_type AS type,latitude,longitude,google_place_id AS place_id,status FROM partners WHERE status='LIVE' ORDER BY id DESC LIMIT 100")]; c.close()
-                    for x in rows: x.update({'source':'TAZVIKO','orderable':True,'open_now':None})
-                    return self.send_json({'provider':'TAZVIKO_ONLY','places':rows,'message':'Add GOOGLE_PLACES_API_KEY for automatic nearby business discovery.'})
+                approved=nearby_live_partners(lat,lng,category);rows=google_nearby(lat,lng,radius,category)
+                if rows is None:return self.send_json({'provider':'TAZVIKO_ONLY','places':approved,'message':'Showing approved TAZVIKO businesses inside their delivery radius.'})
+                known={str(x.get('place_id') or '') for x in rows};rows.extend(x for x in approved if not x.get('place_id') or str(x.get('place_id')) not in known)
+                rows.sort(key=lambda x:(not x.get('orderable'),x.get('distance_km',99999)))
                 return self.send_json({'provider':'GOOGLE','places':rows})
             except Exception as e:return self.send_json({'error':'nearby_provider_error','detail':str(e)[:300]},502)
         if p=='/api/v1/rider/me':
@@ -575,10 +608,21 @@ class Handler(SimpleHTTPRequestHandler):
             if method=='RAZORPAY' and not (RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET): return self.send_json({'error':'payment_gateway_not_configured'},503)
             try:q=calculate_order(data.get('items'),data.get('coupon',''))
             except ValueError as e:return self.send_json({'error':str(e)},400)
+            partner_ids={int(x['partner_id']) for x in q['items'] if x.get('partner_id')}
+            customer_lat=data.get('customer_latitude');customer_lng=data.get('customer_longitude')
+            if partner_ids:
+                if not valid_coordinates(customer_lat,customer_lng):return self.send_json({'error':'customer_location_required_for_local_shop'},400)
+                c=db()
+                for partner_id in partner_ids:
+                    shop=c.execute("SELECT latitude,longitude,delivery_radius_km FROM partners WHERE id=? AND status='LIVE'",(partner_id,)).fetchone()
+                    if not shop or not valid_coordinates(shop['latitude'],shop['longitude']):c.close();return self.send_json({'error':'shop_location_not_configured'},409)
+                    if distance_km(customer_lat,customer_lng,shop['latitude'],shop['longitude'])>max(1,int(shop['delivery_radius_km'] or 5)):c.close();return self.send_json({'error':'outside_shop_delivery_area'},400)
+                c.close()
             merchants=sorted({x['merchant'] for x in q['items']}); merchant=' / '.join(merchants)[:150]
             code='TZ'+datetime.now().strftime('%y%m%d')+str(secrets.randbelow(9000)+1000); pstatus='COD_PENDING' if method=='COD' else 'AWAITING_PAYMENT'
             vals=(code,now(),usr['id'] if usr else None,str(data['customer_name'])[:120],str(data['mobile'])[:30],str(data['address'])[:500],merchant,json.dumps(q['items'],ensure_ascii=False),q['subtotal'],q['discount'],q['delivery_fee'],q['platform_fee'],q['tax'],q['total'],q['commission'],q['merchant_payable'],q['tazviko_earning'],method,pstatus,'PLACED')
             c=db(); c.execute('''INSERT INTO orders(order_code,created_at,user_id,customer_name,mobile,address,merchant,items_json,subtotal,discount,delivery_fee,platform_fee,tax,total,commission,merchant_payable,tazviko_earning,payment_method,payment_status,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',vals)
+            if valid_coordinates(customer_lat,customer_lng):c.execute('UPDATE orders SET customer_latitude=?,customer_longitude=? WHERE order_code=?',(float(customer_lat),float(customer_lng),code))
             for item in q['items']: c.execute('UPDATE products SET stock_qty=MAX(0,stock_qty-?) WHERE product_key=?',(item['qty'],item['product_key']))
             c.commit(); c.close(); return self.send_json({'ok':True,'order_code':code,'status':'PLACED','payment_status':pstatus,'quote':q},201)
         if p=='/api/v1/payments/create':
@@ -608,6 +652,7 @@ class Handler(SimpleHTTPRequestHandler):
             cur=c.execute('INSERT INTO delivery_applications(created_at,full_name,mobile,vehicle_type,vehicle_number,identity_ref,payout_ref,status) VALUES(?,?,?,?,?,?,?,?)',(now(),full_name[:120],mobile[:30],str(data.get('vehicle_type',''))[:60],str(data.get('vehicle_number',''))[:80],str(data.get('identity_ref',''))[:160],str(data.get('payout_ref',''))[:160],'REVIEW')); c.commit(); did=cur.lastrowid; c.close(); return self.send_json({'ok':True,'id':did,'status':'REVIEW'},201)
         if p=='/api/v1/partners/applications':
             if not data.get('business_name') or len(str(data.get('phone','')).strip())<8:return self.send_json({'error':'business_name_mobile_required'},400)
+            if not valid_coordinates(data.get('latitude'),data.get('longitude')):return self.send_json({'error':'shop_current_location_required'},400)
             phone=str(data.get('phone','')).strip()[:30];c=db();existing=c.execute("SELECT id,status FROM partners WHERE phone=? AND status IN ('REVIEW','LIVE') ORDER BY id DESC LIMIT 1",(phone,)).fetchone()
             if existing:c.close();return self.send_json({'error':'partner_application_already_exists','id':existing['id'],'status':existing['status']},409)
             cur=c.execute('''INSERT INTO partners(created_at,business_name,owner_name,business_type,city,address,phone,bank_ref,catalog,status,latitude,longitude,google_place_id,source,opening_hours) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(now(),str(data.get('business_name',''))[:150],str(data.get('owner_name',''))[:120],str(data.get('business_type',''))[:80],str(data.get('city',''))[:120],str(data.get('address',''))[:500],phone,str(data.get('bank_ref',''))[:160],str(data.get('catalog',''))[:5000],'REVIEW',data.get('latitude'),data.get('longitude'),str(data.get('google_place_id',''))[:200],str(data.get('source','TAZVIKO'))[:30],str(data.get('opening_hours',''))[:120])); c.commit(); pid=cur.lastrowid; c.close(); return self.send_json({'ok':True,'id':pid,'status':'REVIEW'},201)
@@ -618,6 +663,7 @@ class Handler(SimpleHTTPRequestHandler):
         if p=='/api/v1/merchant/profile':
             m=merchant_user(self)
             if not m:return self.send_json({'error':'merchant_login_required'},401)
+            if ('latitude' in data or 'longitude' in data) and not valid_coordinates(data.get('latitude'),data.get('longitude')):return self.send_json({'error':'valid_shop_location_required'},400)
             allowed={'business_name','owner_name','business_type','city','address','opening_hours','delivery_radius_km','logo_url','latitude','longitude'}; fields=[];vals=[]
             for k in allowed:
                 if k in data:fields.append(k+'=?');vals.append(data[k])

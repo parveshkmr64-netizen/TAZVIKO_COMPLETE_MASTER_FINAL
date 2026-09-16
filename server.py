@@ -406,13 +406,13 @@ class Handler(SimpleHTTPRequestHandler):
         if p=='/api/v1/health': return self.send_json({'ok':True,'mode':'launch-ready','payment_gateway':'razorpay' if RAZORPAY_KEY_ID else 'not-configured','time':now()})
         if p=='/api/v1/config': return self.send_json({'app_name':'TAZVIKO','currency':'INR','online_payment_enabled':bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET),'razorpay_key_id':RAZORPAY_KEY_ID,'nearby_discovery_enabled':bool(GOOGLE_PLACES_API_KEY),'rider_portal':'/rider.html','merchant_portal':'/partner.html'})
         if p=='/api/v1/catalog':
-            has_location=valid_coordinates((qs.get('lat') or [None])[0],(qs.get('lng') or [None])[0]);nearby_ids=None;distances={}
+            has_location=valid_coordinates((qs.get('lat') or [None])[0],(qs.get('lng') or [None])[0]);nearby_ids=set();distances={}
             if has_location:
                 lat=float(qs['lat'][0]);lng=float(qs['lng'][0]);near=nearby_live_partners(lat,lng);nearby_ids={x['partner_id'] for x in near};distances={x['partner_id']:x['distance_km'] for x in near}
             c=db(); rows=[]
-            for r in c.execute("SELECT pr.product_key,pr.name,pr.merchant,pr.price,pr.category,pr.description,pr.image_url,pr.stock_qty,pr.partner_id FROM products pr LEFT JOIN partners p ON p.id=pr.partner_id WHERE pr.active=1 AND pr.stock_qty>0 AND (pr.partner_id IS NULL OR p.status='LIVE') ORDER BY pr.partner_id DESC,pr.merchant,pr.name"):
+            for r in c.execute("SELECT pr.product_key,pr.name,pr.merchant,pr.price,pr.category,pr.description,pr.image_url,pr.stock_qty,pr.partner_id,p.business_type FROM products pr LEFT JOIN partners p ON p.id=pr.partner_id WHERE pr.active=1 AND pr.stock_qty>0 AND (pr.partner_id IS NULL OR p.status='LIVE') ORDER BY pr.partner_id DESC,pr.merchant,pr.name"):
                 x=dict(r)
-                if x['partner_id'] is not None and nearby_ids is not None and x['partner_id'] not in nearby_ids:continue
+                if x['partner_id'] is not None and x['partner_id'] not in nearby_ids:continue
                 if x['partner_id'] in distances:x['distance_km']=distances[x['partner_id']]
                 rows.append(x)
             c.close(); return self.send_json({'products':rows,'location_filtered':has_location})

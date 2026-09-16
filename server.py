@@ -14,6 +14,7 @@ RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET','').strip()
 PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL','').strip()
 GOOGLE_PLACES_API_KEY = os.environ.get('GOOGLE_PLACES_API_KEY','').strip()
 MAX_BODY = int(os.environ.get('TAZVIKO_MAX_BODY','20971520'))
+MAX_IMAGE_CHARS = 2500000
 RATE_LIMIT = int(os.environ.get('TAZVIKO_RATE_LIMIT','120'))
 COMMISSION_BPS = int(os.environ.get('TAZVIKO_COMMISSION_BPS','1500'))  # 15.00%
 PLATFORM_FEE = int(os.environ.get('TAZVIKO_PLATFORM_FEE','9'))
@@ -351,7 +352,8 @@ def google_nearby(lat,lng,radius=4000,category='all'):
     out=[]
     for x in data.get('places',[]):
         loc=x.get('location') or {}; nm=(x.get('displayName') or {}).get('text','')
-        out.append({'place_id':x.get('id',''),'name':nm,'address':x.get('formattedAddress',''),'latitude':loc.get('latitude'),'longitude':loc.get('longitude'),'type':x.get('primaryType',''),'rating':x.get('rating'),'open_now':((x.get('currentOpeningHours') or {}).get('openNow')),'maps_url':((x.get('googleMapsLinks') or {}).get('placeUri')),'source':'GOOGLE','orderable':False})
+        plat,plng=loc.get('latitude'),loc.get('longitude');km=round(distance_km(lat,lng,plat,plng),2) if valid_coordinates(plat,plng) else None
+        out.append({'place_id':x.get('id',''),'name':nm,'address':x.get('formattedAddress',''),'latitude':plat,'longitude':plng,'type':x.get('primaryType',''),'rating':x.get('rating'),'open_now':((x.get('currentOpeningHours') or {}).get('openNow')),'maps_url':((x.get('googleMapsLinks') or {}).get('placeUri')),'source':'GOOGLE','orderable':False,'distance_km':km})
     c=db(); live={r['google_place_id']:dict(r) for r in c.execute("SELECT * FROM partners WHERE status='LIVE' AND google_place_id IS NOT NULL AND google_place_id<>''")}; c.close()
     for x in out:
         if x['place_id'] in live:
@@ -410,7 +412,7 @@ class Handler(SimpleHTTPRequestHandler):
             if has_location:
                 lat=float(qs['lat'][0]);lng=float(qs['lng'][0]);near=nearby_live_partners(lat,lng);nearby_ids={x['partner_id'] for x in near};distances={x['partner_id']:x['distance_km'] for x in near}
             c=db(); rows=[]
-            for r in c.execute("SELECT pr.product_key,pr.name,pr.merchant,pr.price,pr.category,pr.description,pr.image_url,pr.stock_qty,pr.partner_id,p.business_type FROM products pr LEFT JOIN partners p ON p.id=pr.partner_id WHERE pr.active=1 AND pr.stock_qty>0 AND (pr.partner_id IS NULL OR p.status='LIVE') ORDER BY pr.partner_id DESC,pr.merchant,pr.name"):
+            for r in c.execute("SELECT pr.product_key,pr.name,pr.merchant,pr.price,pr.category,pr.description,pr.image_url,pr.stock_qty,pr.partner_id,p.business_type,p.logo_url FROM products pr LEFT JOIN partners p ON p.id=pr.partner_id WHERE pr.active=1 AND pr.stock_qty>0 AND (pr.partner_id IS NULL OR p.status='LIVE') ORDER BY pr.partner_id DESC,pr.merchant,pr.name"):
                 x=dict(r)
                 if x['partner_id'] is not None and x['partner_id'] not in nearby_ids:continue
                 if x['partner_id'] in distances:x['distance_km']=distances[x['partner_id']]
@@ -564,10 +566,12 @@ class Handler(SimpleHTTPRequestHandler):
             m=merchant_user(self)
             if not m:return self.send_json({'error':'merchant_login_required'},401)
             name=str(data.get('name','')).strip(); category=str(data.get('category','')).strip(); image_url=str(data.get('image_url','')).strip(); description=str(data.get('description','')).strip()
+            if len(image_url)>MAX_IMAGE_CHARS:return self.send_json({'error':'product_image_too_large'},413)
+            if image_url and not (image_url.startswith(('https://','http://','data:image/'))):return self.send_json({'error':'valid_product_image_required'},400)
             try:price=max(1,int(data.get('price'))); stock=max(0,int(data.get('stock_qty',0)))
             except Exception:return self.send_json({'error':'valid_price_stock_required'},400)
             if not name:return self.send_json({'error':'product_name_required'},400)
-            key='p'+str(m['id'])+'-'+secrets.token_hex(6);c=db();cur=c.execute('INSERT INTO products(product_key,name,merchant,price,active,partner_id,category,description,image_url,stock_qty) VALUES(?,?,?,?,1,?,?,?,?,?)',(key,name[:150],m['business_name'][:150],price,m['id'],category[:80],description[:1000],image_url[:1000],stock));c.commit();pid=cur.lastrowid;c.close();return self.send_json({'ok':True,'id':pid,'product_key':key},201)
+            key='p'+str(m['id'])+'-'+secrets.token_hex(6);c=db();cur=c.execute('INSERT INTO products(product_key,name,merchant,price,active,partner_id,category,description,image_url,stock_qty) VALUES(?,?,?,?,1,?,?,?,?,?)',(key,name[:150],m['business_name'][:150],price,m['id'],category[:80],description[:1000],image_url[:MAX_IMAGE_CHARS],stock));c.commit();pid=cur.lastrowid;c.close();return self.send_json({'ok':True,'id':pid,'product_key':key},201)
         if p=='/api/v1/rider/login':
             mobile=str(data.get('mobile','')).strip(); pin=str(data.get('pin','')).strip(); c=db(); r=c.execute("SELECT * FROM riders WHERE mobile=? AND status='ACTIVE'",(mobile,)).fetchone(); c.close()
             if not r or not check_pin(pin,r['pin_hash']):return self.send_json({'error':'invalid_rider_login'},401)

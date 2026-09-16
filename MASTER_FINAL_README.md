@@ -28,7 +28,7 @@ This is the single master package. It includes all functionality from the previo
 - Rider delivery status updates: PICKED_UP, ON_THE_WAY, DELIVERED
 
 ## Important behavior
-Nearby public businesses can be discovered from Google Places when GOOGLE_PLACES_API_KEY is configured. Discovery does not make an external business automatically accept TAZVIKO orders. Ordering should remain enabled only for approved/orderable TAZVIKO partners.
+Nearby public businesses appear in the main customer discovery grids when `GOOGLE_PLACES_API_KEY` is configured. They include an owner claim/registration action but remain clearly marked **Not yet orderable**. Discovery does not make an external business automatically accept TAZVIKO orders; menu, price, product photo and ordering remain enabled only for approved TAZVIKO partners.
 
 ## COD pilot
 The site can launch COD-only. Online payment remains optional and can be activated later with live payment-gateway credentials without rebuilding the website.

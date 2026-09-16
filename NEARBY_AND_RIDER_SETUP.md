@@ -3,7 +3,9 @@
 ## Customer nearby businesses
 - Customer taps **Use My Location**.
 - `/api/v1/places/nearby` searches nearby restaurants, grocery stores, pharmacies, shops and malls.
-- Set `GOOGLE_PLACES_API_KEY` to enable automatic Google Places nearby discovery.
+- Set `GOOGLE_PLACES_API_KEY` to enable automatic Google Places nearby discovery. Nearby restaurants, grocery stores, pharmacies, malls and local shops then appear directly in the customer food/store sections with name, address, rating, open status and distance.
+- A discovered business is labelled **Not yet orderable** until its owner uses **Own it? Register**, completes verification and is approved by admin. The claim form is prefilled with the Google business name, address, coordinates and place ID.
+- Real menu/products, prices, stock, photos and the **ADD** button only appear after an approved merchant adds them in Merchant Dashboard.
 - Discovered businesses are informational until matched to an approved TAZVIKO partner (`google_place_id` + partner status `LIVE`).
 - Only approved/orderable partners should accept TAZVIKO orders.
 

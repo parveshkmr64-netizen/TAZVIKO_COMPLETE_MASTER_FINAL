@@ -1,5 +1,5 @@
-const CACHE='tazviko-v11-nearby-discovery';
-const CORE=['./','./index.html','./partner.html','./rider.html','./admin.html','./offline.html','./manifest.webmanifest','./js/app-config.js','./js/api-client.js','./js/launch-ready.js','./js/admin-tools.js','./js/pwa.js','./assets/hero-marketplace.webp','./assets/category-sprite.webp','./assets/icons/icon-192.png','./assets/icons/icon-512.png'];
+const CACHE='tazviko-v12-premium-home';
+const CORE=['./','./index.html','./partner.html','./rider.html','./admin.html','./offline.html','./manifest.webmanifest','./js/app-config.js','./js/api-client.js','./js/launch-ready.js','./js/admin-tools.js','./js/pwa.js','./assets/hero-marketplace.webp','./assets/promo-hot-meals-v2.webp','./assets/promo-daily-needs-v2.webp','./assets/category-sprite.webp','./assets/icons/icon-192.png','./assets/icons/icon-512.png'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(CORE)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;e.respondWith(fetch(e.request).then(r=>{const copy=r.clone();caches.open(CACHE).then(c=>c.put(e.request,copy));return r}).catch(()=>caches.match(e.request).then(r=>r||caches.match('./offline.html'))))});
